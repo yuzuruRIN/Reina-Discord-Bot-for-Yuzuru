@@ -1,0 +1,15 @@
+[Unit]
+Description=Raina Discord Slip Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/discord-bot
+ExecStart=/home/ubuntu/discord-bot/venv/bin/python /home/ubuntu/discord-bot/bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

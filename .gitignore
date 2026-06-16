@@ -1,0 +1,18 @@
+# ───────── ความลับ ห้าม commit เด็ดขาด ─────────
+.env
+credentials.json
+*.key
+*.pem
+
+# ───────── Python ─────────
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+
+# ───────── OS / Editor ─────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
