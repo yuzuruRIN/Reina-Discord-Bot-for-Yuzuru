@@ -16,3 +16,11 @@ env/
 Thumbs.db
 .vscode/
 .idea/
+
+# ───────── เพิ่มภายหลัง: ไฟล์ความลับ/ขยะที่ห้ามขึ้น git ─────────
+env
+.env.*
+!.env.example
+*.bak
+.cache/
+.local/

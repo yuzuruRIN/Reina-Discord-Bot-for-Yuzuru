@@ -114,6 +114,17 @@ AI อ่านสลิป (Claude Vision)
 | `/removerole @member @role` | Manage Roles | ปลดยศ |
 | `/checkrole [@member]` | ทุกคน | เช็ควันหมดอายุ + ยอดสะสม |
 | `/listroles` | Administrator | ดูรายการทั้งหมด |
+| `/linkemail [อีเมล]` | ผู้มียศ Donator | ผูกอีเมลจริงเพื่อล็อกอินเข้าเกม (ไม่ใส่อีเมล = ดูอีเมลที่ผูกไว้) |
+| `/linkstats` | Administrator | ดูจำนวนคนที่ผูกอีเมลแล้ว/ยัง (🔴 = ยังไม่ผูกและยศยังไม่หมด) |
+| `/checkslip message_id [channel]` | Manage Roles | สั่งตรวจสลิปย้อนหลังจาก ID ข้อความ |
+| `/checkpatreon email` | Manage Roles | ดูข้อมูลสมาชิก Patreon ใน Supabase |
+| `/forceexpiry` | เจ้าของเซิร์ฟเวอร์ | ปลดยศที่หมดอายุทันที |
+
+### 📧 การผูกอีเมล (เกมเวอร์ชันใหม่ใช้อีเมลจริงล็อกอิน)
+- ตอนส่งสลิปครั้งแรก ระบบสร้างอีเมลชั่วคราว `{username}@donator.discord` ซึ่งส่งรหัส OTP ไม่ถึง
+- บอทจะต่อท้ายข้อความตอบสลิปให้ผูกอีเมลผ่าน `/linkemail` ในช่องผูกอีเมล (ID `1548973130016497674`) **เฉพาะคนที่ยังไม่ได้ผูก** (ข้อความแก้ที่ `MSG_LINK_EMAIL_HINT` ใน `config.py`)
+- ก่อนปล่อยอัปเดตเกม ให้รัน `/linkstats` ดูกลุ่ม 🔴 แล้วประกาศตามให้ผูก
+- ต้องรัน migration `001_device_login.sql` (ฝั่ง yuzuru_game_dev) ก่อน: คอลัมน์ `discord_id`, `source`, `email_verified` และตาราง `devices`
 
 ---
 

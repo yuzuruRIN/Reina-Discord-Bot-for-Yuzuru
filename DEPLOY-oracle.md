@@ -13,7 +13,7 @@
    - **SSH keys**: เลือก *Generate a key pair for me* → **ดาวน์โหลด Private Key** เก็บไว้ (สำคัญมาก ไฟล์ `.key`)
 4. กด **Create** → รอจน Running → จด **Public IP address**
 
-> 📌 บอทไม่ต้องเปิด port ขาเข้าเลย (มันต่อออกหา Discord เอง) ไม่ต้องตั้ง ingress rule
+> 📌 **สำหรับ Patreon Webhook:** ต้องเปิด Port 8080 บน Oracle Cloud (Security List -> Ingress Rule: Port 8080 TCP) และรันคำสั่ง `sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 8080 -j ACCEPT` บน Ubuntu VM
 
 ---
 
@@ -38,8 +38,8 @@ mkdir ~/discord-bot
 ## ขั้นที่ 4 — ส่งไฟล์ขึ้น server
 เปิด PowerShell ใหม่ "บนคอมตัวเอง" (ไม่ใช่ใน ssh) แล้วรัน:
 ```powershell
-cd "C:\Users\Atipun.p\Documents\discord bot"
-scp -i "C:\path\to\your-key.key" bot.py config.py sheets.py slip_reader.py supa.py requirements.txt .env credentials.json raina-bot.service ubuntu@<PUBLIC_IP>:~/discord-bot/
+cd "c:\renpy project\Reina-Discord-Bot-for-Yuzuru"
+scp -i "C:\path\to\your-key.key" bot.py config.py sheets.py slip_reader.py supa.py patreon_webhook.py requirements.txt .env credentials.json raina-bot.service ubuntu@<PUBLIC_IP>:~/discord-bot/
 ```
 
 ---

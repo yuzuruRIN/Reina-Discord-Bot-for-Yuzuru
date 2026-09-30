@@ -9,6 +9,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import date, datetime
 import os
+import re
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -82,6 +83,21 @@ def _find_row(discord_username: str) -> int | None:
     return None
 
 
+def _find_row_by_id(discord_id: int) -> int | None:
+    """
+    คืน row index (1-based) ของ user โดยเทียบ Discord ID (คอลัมน์ F)
+    เชื่อถือได้กว่าชื่อ เพราะ ID ไม่เปลี่ยน แม้ผู้ใช้เปลี่ยน username
+    """
+    if not discord_id:
+        return None
+    values = get_sheet().col_values(COL_DISCORD_ID)
+    target = str(discord_id)
+    for i, v in enumerate(values[1:], start=2):  # skip header
+        if v and v.strip() == target:
+            return i
+    return None
+
+
 def get_record(discord_username: str) -> dict | None:
     """ดึงข้อมูล user จากชีต คืน dict หรือ None"""
     row = _find_row(discord_username)
@@ -100,31 +116,75 @@ def get_record(discord_username: str) -> dict | None:
     }
 
 
+def _append_new_row(sheet, discord_username: str, discord_id: int, amount: float) -> bool:
+    """append แถวใหม่ (A,B,C) ไม่แตะ D (สูตร) แล้วเขียน Discord ID ลงแถวที่เพิ่งสร้างเท่านั้น"""
+    resp = sheet.append_row(
+        [discord_username, amount, _fmt_date(date.today())],
+        value_input_option="USER_ENTERED",
+    )
+    # อ่านเลขแถวจาก response (เช่น 'Sheet1!A123:C123') — เชื่อถือได้แม้ชื่อจะซ้ำกับแถวเก่า
+    new_row = None
+    try:
+        rng = resp["updates"]["updatedRange"].split("!")[-1]  # 'A123:C123'
+        m = re.search(r"\d+", rng)
+        new_row = int(m.group()) if m else None
+    except Exception:
+        new_row = None
+    if new_row is None:  # fallback (กรณีไม่ได้ response ที่คาดไว้)
+        new_row = _find_row_by_id(discord_id) or _find_row(discord_username)
+    if new_row:
+        sheet.update_cell(new_row, COL_DISCORD_ID, str(discord_id))
+    return True
+
+
 def upsert_member(discord_username: str, discord_id: int, amount: float) -> bool:
     """
-    สมาชิกใหม่ → append แถวใหม่ (Name, Price, Start Date=วันนี้) + เก็บ Discord ID คอลัมน์ J
-    สมาชิกเก่า → บวกเงินเข้า Price เดิม (End Date คำนวณเองจากสูตร ไม่แตะ)
-    คืน is_new
+    คืน is_new (True = สร้างแถวใหม่, False = บวกเงินเข้าแถวเดิม)
+
+    ลำดับการจับคู่แถว:
+      1) หาด้วย Discord ID (เสถียรสุด — สมาชิกที่บอทเคยบันทึก ID ไว้แล้ว)
+      2) ถ้าไม่เจอ หาด้วย username (แถวที่กรอกมือ ยังไม่มี Discord ID):
+         • ถ้า "ยังไม่หมดอายุ" → ใช้แถวนั้น (เติม Discord ID + บวกเงิน)
+         • ถ้า "หมดอายุแล้ว"   → สร้างแถวใหม่ (ปล่อยแถวเก่าไว้)
+      3) ไม่เจอเลย → สร้างแถวใหม่
     """
     sheet = get_sheet()
-    record = get_record(discord_username)
+    today = date.today()
 
-    if record is None:
-        # เขียนเฉพาะ A,B,C — ไม่แตะ D (สูตร) หรือคอลัมน์อื่น
-        sheet.append_row(
-            [discord_username, amount, _fmt_date(date.today())],
-            value_input_option="USER_ENTERED",
-        )
-        row = _find_row(discord_username)
-        if row:
-            sheet.update_cell(row, COL_DISCORD_ID, str(discord_id))
-        return True
-    else:
-        new_price = record["price"] + amount
-        sheet.update_cell(record["row"], COL_PRICE, new_price)
-        if not record["discord_id"]:
-            sheet.update_cell(record["row"], COL_DISCORD_ID, str(discord_id))
-        return False
+    # 1) หาด้วย Discord ID ก่อน
+    row = _find_row_by_id(discord_id)
+    existing = sheet.row_values(row) if row else None
+
+    # 2) ไม่เจอ ID → ลองชื่อ (เฉพาะแถวที่ยังไม่หมดอายุ)
+    if row is None:
+        name_row = _find_row(discord_username)
+        if name_row is not None:
+            name_vals = sheet.row_values(name_row)
+            end_str = name_vals[COL_END - 1] if len(name_vals) >= COL_END else ""
+            exp = parse_date(end_str)
+            expired = exp is not None and exp < today
+            if not expired:
+                row, existing = name_row, name_vals
+            # ถ้าหมดอายุ → ปล่อย row = None เพื่อไปสร้างแถวใหม่
+
+    # 3) ไม่มีแถวที่ใช้ได้ (ใหม่จริง หรือ คนเก่าที่หมดอายุ) → สร้างแถวใหม่
+    if row is None:
+        return _append_new_row(sheet, discord_username, discord_id, amount)
+
+    # ── สมาชิกเก่าที่ยัง active — บวกเงินเข้า Price เดิม ──────────────────────
+    cur_price = 0.0
+    if len(existing) >= COL_PRICE and existing[COL_PRICE - 1]:
+        try:
+            cur_price = float(str(existing[COL_PRICE - 1]).replace(",", ""))
+        except ValueError:
+            cur_price = 0.0
+    sheet.update_cell(row, COL_PRICE, cur_price + amount)
+
+    # เติม Discord ID ถ้าแถวเดิมยังไม่มี (เช่น แถวที่กรอกมือไว้ และยังไม่หมดอายุ)
+    cur_id = existing[COL_DISCORD_ID - 1] if len(existing) >= COL_DISCORD_ID else ""
+    if not cur_id:
+        sheet.update_cell(row, COL_DISCORD_ID, str(discord_id))
+    return False
 
 
 def get_all_members() -> list[dict]:

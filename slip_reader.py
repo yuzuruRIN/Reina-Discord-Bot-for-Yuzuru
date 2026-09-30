@@ -1,24 +1,30 @@
 """
-slip_reader.py — ใช้ Claude Vision อ่านสลิปโอนเงิน
-คืน SlipResult(is_slip, amount) หรือ raise exception
+slip_reader.py — ใช้ Claude Vision (AI) อ่าน/ตรวจสอบสลิปโอนเงิน
+
+ตรวจ 3 อย่าง: ชื่อผู้รับตรงไหม, จำนวนเงิน, และเลขอ้างอิง (ref) ไว้กันสลิปซ้ำ
+คืน SlipResult เสมอ (ยกเว้น error ระดับ API ของ Claude ที่ raise ออกไปให้ bot.py จัดการ)
+
+หมายเหตุ: AI อ่านยอด/ชื่อจากรูป ป้องกันสลิปตัดต่อ 100% ไม่ได้ (ยอดในรูปแก้ได้)
 """
 
 import anthropic
 import base64
 import httpx
 import re
+import json
 from dataclasses import dataclass
 
 
 @dataclass
 class SlipResult:
-    is_slip: bool        # True = เป็นสลิปจริง
-    amount: float | None # จำนวนเงินที่โอน (บาท), None ถ้าอ่านไม่ได้
-    ref: str | None = None  # เลขที่อ้างอิง/รหัสรายการของสลิป (ใช้เช็กสลิปซ้ำ)
-    recipient: str | None = None    # ชื่อผู้รับเงินในสลิป
+    is_slip: bool                    # True = เป็นสลิปจริง
+    amount: float | None             # จำนวนเงินที่โอน (บาท), None ถ้าอ่านไม่ได้
+    ref: str | None = None           # เลขอ้างอิงรายการ (ใช้เช็กสลิปซ้ำ)
+    recipient: str | None = None     # ชื่อผู้รับเงินในสลิป
     recipient_match: bool = True     # ชื่อผู้รับตรงกับที่กำหนดไหม (default True = ไม่ตรวจ)
 
 
+# ── Entry point ───────────────────────────────────────────────────────────────
 async def read_slip_from_url(image_url: str, expected_names: list[str] | None = None) -> SlipResult:
     """ดาวน์โหลดรูปจาก URL แล้วส่ง Claude Vision วิเคราะห์"""
     async with httpx.AsyncClient() as client:
@@ -27,7 +33,6 @@ async def read_slip_from_url(image_url: str, expected_names: list[str] | None = 
         image_bytes = resp.content
         content_type = resp.headers.get("content-type", "image/jpeg")
 
-    # รองรับ webp → ให้เป็น image/webp
     if "webp" in content_type:
         media_type = "image/webp"
     elif "png" in content_type:
@@ -39,6 +44,25 @@ async def read_slip_from_url(image_url: str, expected_names: list[str] | None = 
     return await _analyze(b64, media_type, expected_names)
 
 
+# ── ดึง JSON ก้อนแรกจากคำตอบของ AI ────────────────────────────────────────────
+def _extract_json(text: str) -> dict:
+    """
+    AI บางครั้งพ่วงข้อความก่อน/หลัง JSON (หรือใส่ markdown fence) ทำให้ json.loads พัง
+    ("Extra data: ...") → ฟังก์ชันนี้ตัด fence แล้วอ่านเฉพาะ JSON object ก้อนแรก
+    ส่วนที่เหลือต่อท้ายจะถูกมองข้าม
+    """
+    raw = re.sub(r"```[a-zA-Z]*", "", text).strip()  # ตัด markdown fence
+    start = raw.find("{")
+    if start == -1:
+        raise ValueError(f"ไม่พบ JSON ในคำตอบของ AI: {raw[:200]}")
+    # raw_decode อ่าน JSON ก้อนแรกจากตำแหน่ง start แล้วหยุด (ไม่สนข้อความต่อท้าย)
+    obj, _end = json.JSONDecoder().raw_decode(raw, start)
+    if not isinstance(obj, dict):
+        raise ValueError(f"คำตอบของ AI ไม่ใช่ JSON object: {raw[:200]}")
+    return obj
+
+
+# ── Claude Vision analysis ────────────────────────────────────────────────────
 async def _analyze(b64_image: str, media_type: str, expected_names: list[str] | None = None) -> SlipResult:
     client = anthropic.AsyncAnthropic()
 
@@ -54,7 +78,7 @@ async def _analyze(b64_image: str, media_type: str, expected_names: list[str] | 
     else:
         recipient_rule = '- recipient_match = true เสมอ (ไม่มีการกำหนดชื่อผู้รับ)'
 
-    prompt = f"""คุณเป็นผู้ตรวจสอบสลิปโอนเงินธนาคาร
+    prompt = f"""คุณเป็นผู้ตรวจสอบสลิปโอนเงิน (รองรับทั้งสลิปธนาคารและ TrueMoney Wallet)
 
 วิเคราะห์รูปภาพนี้และตอบในรูปแบบ JSON เท่านั้น ไม่ต้องมีคำอธิบายเพิ่มเติม:
 
@@ -69,16 +93,16 @@ async def _analyze(b64_image: str, media_type: str, expected_names: list[str] | 
 }}
 
 กฎ:
-- is_slip = true เฉพาะเมื่อเป็นสลิปโอนเงินจริง (มีข้อมูลธนาคาร, ผู้รับ, วันเวลา, จำนวนเงิน)
+- is_slip = true เฉพาะเมื่อเป็นสลิปโอนเงินจริง (มีข้อมูลผู้รับ, วันเวลา, จำนวนเงิน)
 - is_slip = false ถ้าเป็นรูปอื่น, รูปสลิปปลอม, หรือไม่ชัดเจนพอ
 - amount ให้เป็นตัวเลขล้วน ไม่มีเครื่องหมายคอมม่าหรือสัญลักษณ์สกุลเงิน
-- ref คือเลขอ้างอิงเฉพาะของรายการ (เช่น "รหัสอ้างอิง", "เลขที่รายการ", "Transaction ID", "Reference No.") ให้ดึงเป็นข้อความตามที่เห็น ถ้าหาไม่เจอให้เป็น null
+- ref คือเลขอ้างอิงเฉพาะของรายการ (เช่น "รหัสอ้างอิง", "เลขที่รายการ", "หมายเลขการทำรายการ", "Transaction ID", "Reference No.") ให้ดึงเป็นข้อความตามที่เห็น ถ้าหาไม่เจอให้เป็น null
 - recipient คือชื่อ "ผู้รับเงิน/บัญชีปลายทาง" (ไม่ใช่ผู้โอน) ให้ดึงตามที่เห็น
 {recipient_rule}"""
 
     message = await client.messages.create(
         model="claude-haiku-4-5",
-        max_tokens=256,
+        max_tokens=512,
         messages=[
             {
                 "role": "user",
@@ -97,13 +121,7 @@ async def _analyze(b64_image: str, media_type: str, expected_names: list[str] | 
         ],
     )
 
-    raw = message.content[0].text.strip()
-
-    # Parse JSON ที่ได้จาก Claude
-    import json
-    # ลบ markdown fence ถ้ามี
-    raw = re.sub(r"```[a-z]*\n?", "", raw).strip()
-    data = json.loads(raw)
+    data = _extract_json(message.content[0].text)
 
     is_slip = bool(data.get("is_slip", False))
     amount_raw = data.get("amount")
@@ -112,16 +130,12 @@ async def _analyze(b64_image: str, media_type: str, expected_names: list[str] | 
 
     recipient_raw = data.get("recipient")
     recipient = str(recipient_raw).strip() if recipient_raw else None
-    # ถ้าไม่ได้กำหนดชื่อผู้รับ ให้ผ่านเสมอ; ถ้ากำหนด ใช้คำตัดสินของ AI
     recipient_match = True if not (expected_names or []) else bool(data.get("recipient_match", False))
 
     if not is_slip:
         return SlipResult(is_slip=False, amount=None, ref=None,
                           recipient=recipient, recipient_match=recipient_match)
 
-    if amount_raw is None:
-        return SlipResult(is_slip=True, amount=None, ref=ref,
-                          recipient=recipient, recipient_match=recipient_match)
-
-    return SlipResult(is_slip=True, amount=float(amount_raw), ref=ref,
+    amount = float(amount_raw) if amount_raw is not None else None
+    return SlipResult(is_slip=True, amount=amount, ref=ref,
                       recipient=recipient, recipient_match=recipient_match)
